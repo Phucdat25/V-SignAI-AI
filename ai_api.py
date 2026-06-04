@@ -11,7 +11,7 @@ from sign_service import VSignExtractorAndPredictor
 
 BASE_DIR = Path(__file__).resolve().parent
 
-MODEL_PATH = BASE_DIR / "spoter_model.onnx"
+MODEL_PATH = BASE_DIR / "ctrgcn_model.onnx"
 GLOSS_PATH = BASE_DIR / "gloss_to_id.json"
 TEMP_DIR = BASE_DIR / "temp_uploads"
 
@@ -83,7 +83,6 @@ def health_check():
 @app.post("/predict")
 async def predict(
     file: UploadFile = File(...),
-    stride: int = Form(15),
     confidence_threshold: float = Form(70.0)
 ):
     if service is None:
@@ -109,11 +108,9 @@ async def predict(
             shutil.copyfileobj(file.file, buffer)
 
         result = service.predict_sentence(
-            video_path=str(temp_path),
-            stride=stride,
-            confidence_threshold=confidence_threshold
-        )
-
+    video_path=str(temp_path),
+    confidence_threshold=confidence_threshold
+)
         return result
 
     except Exception as e:
