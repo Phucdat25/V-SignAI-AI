@@ -83,8 +83,7 @@ def health_check():
 
 @app.post("/predict")
 async def predict(
-    file: UploadFile = File(...),
-    confidence_threshold: float = Form(70.0)
+    file: UploadFile = File(...)
 ):
     if service is None:
         raise HTTPException(status_code=500, detail="AI model is not loaded")
@@ -108,23 +107,21 @@ async def predict(
         with open(temp_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        result = service.predict_sentence(
-    video_path=str(temp_path),
-    confidence_threshold=confidence_threshold
-)
+        result = service.predict_isolated_word(
+            video_path=str(temp_path)
+        )
+
         return result
 
+    except Exception as e:
+        print("========== AI ERROR ==========")
+        traceback.print_exc()
+        print("==============================")
 
-
-except Exception as e:
-    print("========== AI ERROR ==========")
-    traceback.print_exc()
-    print("==============================")
-
-    raise HTTPException(
-        status_code=500,
-        detail=str(e)
-    )
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
     finally:
         if temp_path.exists():
