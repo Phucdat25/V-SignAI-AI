@@ -1,6 +1,7 @@
 import os
 import uuid
 import shutil
+import traceback
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
@@ -113,8 +114,17 @@ async def predict(
 )
         return result
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+
+
+except Exception as e:
+    print("========== AI ERROR ==========")
+    traceback.print_exc()
+    print("==============================")
+
+    raise HTTPException(
+        status_code=500,
+        detail=str(e)
+    )
 
     finally:
         if temp_path.exists():
