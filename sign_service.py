@@ -23,7 +23,7 @@ import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
-class VSignExtractorAndPredictor4:
+class VSignExtractorAndPredictor:
     def __init__(self, onnx_model_path: str, gloss_to_id_path: str, min_conf=0.5):
         # 1. Khởi tạo MediaPipe Holistic
         self.mp_holistic = mp.solutions.holistic
