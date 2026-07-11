@@ -1,5 +1,5 @@
 # # Khởi tạo mô hình VSignExtractorAndPredictor4
-# isolated_service = VSignExtractorAndPredictor4(
+# isolated_service = VSignExtractorAndPredictor(
 #     onnx_model_path="/content/ctrgcn_model.onnx",
 #     gloss_to_id_path="/content/gloss_to_id.json"
 # )
@@ -10,7 +10,6 @@
 # print(result4['predicted_gloss'])
 # # import pprint
 # # pprint.pprint(result4)
-
 
 import os
 import json
@@ -23,6 +22,44 @@ import warnings
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
+# Pose Normalizer Class (duplicated from training script for consistency)
+class PoseNormalizer:
+    def __init__(self, target_shoulder_distance=0.2, target_center_x=0.5, target_center_y=0.4):
+        self.target_shoulder_distance = target_shoulder_distance
+        self.target_center_x = target_center_x
+        self.target_center_y = target_center_y
+        self.LS_IDX = 4  # Left Shoulder index in the selected_indices list
+        self.RS_IDX = 5  # Right Shoulder index in the selected_indices list
+
+    def normalize_pose(self, pose_sequence):
+        if not isinstance(pose_sequence, np.ndarray):
+            pose_sequence = np.array(pose_sequence)
+        if pose_sequence.shape[0] == 0:
+            return pose_sequence
+
+        left_shoulders = pose_sequence[:, self.LS_IDX, :]
+        right_shoulders = pose_sequence[:, self.RS_IDX, :]
+        midpoints = (left_shoulders + right_shoulders) / 2
+        distances = np.linalg.norm(left_shoulders - right_shoulders, axis=1)
+
+        avg_midpoint = np.mean(midpoints, axis=0)
+        avg_distance = np.mean(distances)
+
+        if avg_distance < 1e-6:
+            # Avoid division by zero or very small numbers
+            # If no significant shoulder distance, return original sequence
+            return pose_sequence
+
+        translation_vector = np.array([self.target_center_x, self.target_center_y]) - avg_midpoint
+        data = pose_sequence + translation_vector
+
+        scale_factor = self.target_shoulder_distance / avg_distance
+        target_center = np.array([self.target_center_x, self.target_center_y])
+        data = (data - target_center) * scale_factor + target_center
+
+        return data
+
+
 class VSignExtractorAndPredictor:
     def __init__(self, onnx_model_path: str, gloss_to_id_path: str, min_conf=0.5):
         # 1. Khởi tạo MediaPipe Holistic
@@ -34,6 +71,8 @@ class VSignExtractorAndPredictor:
         )
 
         # Chỉ số các điểm cần lấy (54 điểm)
+        # Note: These indices correspond to the original 543 MediaPipe landmarks.
+        # After extraction, the actual indices for LS and RS will be 4 and 5.
         self.pose_indices = [0, 2, 5, 7, 11, 12, 13, 14, 15, 16, 23, 24]
         self.hand_indices = list(range(501, 543))
         self.selected_indices = self.pose_indices + self.hand_indices
@@ -52,27 +91,36 @@ class VSignExtractorAndPredictor:
         self.TARGET_FRAMES = 70
         self.NUM_POINTS = 54
         self.IN_CHANNELS = 2
-        
+
         # Cấu hình cửa sổ trượt
         self.WINDOW_SIZE = 70
         self.STEP = 10
+
+        # Khởi tạo PoseNormalizer
+        self.normalizer = PoseNormalizer()
 
     def _extract_frame_landmarks(self, results):
         """Trích xuất 54 điểm"""
         full_landmarks = np.zeros((543, 2), dtype=np.float32)
 
         if results.pose_landmarks:
+            # The 0,1,2,... indices here are for the original MediaPipe pose landmarks
             for idx, lm in enumerate(results.pose_landmarks.landmark):
                 full_landmarks[idx] = [lm.x, lm.y]
 
         if results.left_hand_landmarks:
+            # The 501+idx indices here are to store left hand landmarks distinctly
             for idx, lm in enumerate(results.left_hand_landmarks.landmark):
                 full_landmarks[501 + idx] = [lm.x, lm.y]
 
         if results.right_hand_landmarks:
+            # The 522+idx indices here are to store right hand landmarks distinctly
             for idx, lm in enumerate(results.right_hand_landmarks.landmark):
                 full_landmarks[522 + idx] = [lm.x, lm.y]
 
+        # Selects the 54 specific landmarks. The order here dictates the new indices.
+        # E.g., original pose landmark 11 (left shoulder) is at index 4 in selected_indices.
+        # original pose landmark 12 (right shoulder) is at index 5 in selected_indices.
         extracted_points = full_landmarks[self.selected_indices]
         return extracted_points
 
@@ -89,6 +137,8 @@ class VSignExtractorAndPredictor:
         num_frames, num_points, channels = data.shape
 
         # 1. Tìm các frame có dữ liệu điểm tay hợp lệ (tay bắt đầu từ index 12 đến 53)
+        # Note: Adjusted index for hands based on the `selected_indices` mapping.
+        # In `selected_indices`, pose landmarks are 0-11, hand landmarks are 12-53.
         hand_valid = []
         for f in range(num_frames):
             # Nếu có bất kỳ điểm tay nào khác 0.0 -> Hợp lệ
@@ -123,6 +173,9 @@ class VSignExtractorAndPredictor:
                             if not (data[next_f, p, 0] == 0.0 and data[next_f, p, 1] == 0.0):
                                 data[f, p] = data[next_f, p]
                                 break
+                        # If still (0,0) after backward-fill attempt (e.g., all frames are 0), fill with 0.0
+                        if (data[f,p,0] == 0.0 and data[f,p,1] == 0.0):
+                            data[f,p] = 0.0
 
         return data
 
@@ -150,7 +203,10 @@ class VSignExtractorAndPredictor:
         if len(processed_data) == 0:
             return {"status": "error", "message": "Không tìm thấy chuyển động tay rõ ràng trong video."}
 
-        total_frames = processed_data.shape[0]
+        # Áp dụng chuẩn hóa Pose
+        normalized_data = self.normalizer.normalize_pose(processed_data)
+
+        total_frames = normalized_data.shape[0]
         best_gloss = "Unknown"
         best_conf = -1.0
 
@@ -159,15 +215,15 @@ class VSignExtractorAndPredictor:
         if total_frames <= self.WINDOW_SIZE:
             # Nếu tổng frame nhỏ hơn 70, nội suy (scale) để đủ 70
             indices = np.linspace(0, total_frames - 1, self.WINDOW_SIZE).astype(int)
-            windows.append(processed_data[indices])
+            windows.append(normalized_data[indices])
         else:
             # Sliding window: Size 70, Step 10
             for start in range(0, total_frames - self.WINDOW_SIZE + 1, self.STEP):
-                windows.append(processed_data[start : start + self.WINDOW_SIZE])
+                windows.append(normalized_data[start : start + self.WINDOW_SIZE])
 
             # Thêm window cuối cùng nếu bước nhảy bỏ sót
             if (total_frames - self.WINDOW_SIZE) % self.STEP != 0:
-                windows.append(processed_data[-self.WINDOW_SIZE:])
+                windows.append(normalized_data[-self.WINDOW_SIZE:])
 
         # Dự đoán và lấy Conf lớn nhất
         for w_data in windows:
